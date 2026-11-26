@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webex → CRM | Prototype V0.3</title>
+<script src="https://unpkg.com/@webex/embedded-app-sdk@2" defer></script>
+<style>
+:root{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#17283b;background:#eef3f8}*{box-sizing:border-box}body{margin:0;padding:22px}main{max-width:700px;margin:auto;background:#fff;padding:26px;border-radius:18px;box-shadow:0 10px 30px #17283b14}h1{font-size:24px;margin:0 0 7px}p{line-height:1.55;color:#46586c}.tag{display:inline-flex;background:#eaf1ff;color:#174c9d;padding:7px 12px;border-radius:99px;font-size:13px;font-weight:650}label{display:block;font-size:14px;font-weight:650;margin:16px 0 7px}input[type=tel],select{display:block;width:100%;border:1px solid #c5ced9;padding:11px;border-radius:9px;background:#fff;font-size:15px}input[type=checkbox]{margin-right:8px}button{background:#1766d3;color:white;border:0;padding:11px 15px;border-radius:9px;cursor:pointer;font-size:14px;margin:10px 8px 0 0}button:disabled{opacity:.55;cursor:default}.secondary{background:#e7edf5;color:#173654}.panel{margin-top:18px;padding:14px;background:#f4f7fa;border-radius:10px;word-break:break-word}small{color:#576b7d}code{font-family:Consolas,monospace}hr{border:0;border-top:1px solid #e0e8ef;margin:22px 0}</style>
+</head><body><main>
+<h1>Connecteur Webex → CRM</h1>
+<p>Prototype V0.3. Permet de vérifier la détection d'un appel entrant et l'ouverture d'une fiche sans disposer de MyCaelis.</p>
+<span class="tag" id="connection">Mode navigateur local — test disponible</span>
+<label for="mode">Destination</label>
+<select id="mode"><option value="test">TEST — fiche client fictive (recommandé)</option><option value="mycaelis">PRODUCTION — MyCaelis</option></select>
+<label><input type="checkbox" id="enabled" checked>Ouverture automatique lors d'un appel entrant</label>
+<label for="phone">Numéro fictif pour simulation manuelle</label>
+<input id="phone" type="tel" autocomplete="off" value="0612345678" placeholder="0612345678">
+<button type="button" id="simulate">Simuler une sonnerie</button>
+<a id="direct" href="./crm-test.html?phone=0612345678" target="_blank" rel="noopener noreferrer" style="display:inline-block;color:#165ec0;margin:12px 0">Ouvrir directement la fiche test (solution de secours)</a>
+<button type="button" class="secondary" id="manual">Tester l'ouverture manuelle</button>
+<button type="button" class="secondary" id="clear">Effacer le journal</button>
+<div class="panel"><strong>État et événements</strong><div id="log" role="status" aria-live="polite" style="font-size:13px;line-height:1.65;margin-top:10px"></div></div>
+<hr><small>En mode local, la connexion Webex n'est pas attendue. Ne pas activer le mode Production pour tester avec de vrais numéros sans autorisation du client. Test local : fonctionne sans Webex pour simuler un appel. Un véritable appel nécessite le chargement du site dans une Embedded App « Barre latérale » Webex, avec Always On et autorisations appropriées. Les numéros d'appels ne sont pas envoyés à un service de journalisation par ce prototype. La fonctionnalité d'ouverture automatique à la sonnerie doit être validée avec le client Webex et les droits du tenant.</small>
+</main>
+<script>
+(()=>{'use strict';
+const $=id=>document.getElementById(id);
+const state={app:null,ready:false,seen:new Map()};
+const log=(message)=>{const line=document.createElement('div');line.textContent=new Date().toLocaleTimeString('fr-FR')+' · '+message;$('log').prepend(line);while($('log').children.length>14)$('log').lastChild.remove();};
+function normalizedPhone(raw){let value=String(raw??'').trim();if(value.toLowerCase().startsWith('tel:'))value=value.slice(4);value=value.replace(/[\s().-]/g,'');return /^\+?\d{6,15}$/.test(value)?value:null;}
+function destination(phone){const value=normalizedPhone(phone);if(!value)return null;const isTest=$('mode').value==='test';const url=isTest?new URL('./crm-test.html',location.href):new URL('https://transport-rdz.mycaelis.fr/transportsanitaire/');url.searchParams.set('phone',value);return url.href;}
+function openLocalTab(url){
+ // Appelé directement dans le gestionnaire de clic : garde le geste utilisateur.
+ // Évite "noopener" dans window.open : certains navigateurs renvoient null même lorsque l'onglet s'ouvre.
+ const tab=window.open('about:blank','_blank');
+ if(!tab){log('Fenêtre bloquée. Utilisez le lien « Ouvrir directement la fiche test ».');return;}
+ try{tab.opener=null;tab.location.replace(url);log('Nouvel onglet ouvert (test local).');}
+ catch(err){log('Onglet créé mais redirection refusée : '+String(err.message||err));}
+}
+async function openProfile(raw,{manual=false,callKey=''}={}){
+ if(!manual&&!$('enabled').checked){log('Ouverture automatique désactivée.');return;}
+ const url=destination(raw);if(!url){log('Numéro non reconnu : vérifiez le numéro transmis.');return;}
+ const key=String(callKey||normalizedPhone(raw));const now=Date.now();
+ if(!manual&&state.seen.has(key)&&now-state.seen.get(key)<15000){log('Événement ignoré (anti-doublon).');return;}
+ if(!manual)state.seen.set(key,now);
+ for(const [oldKey,time] of state.seen)if(now-time>20000)state.seen.delete(oldKey);
+ if(manual){openLocalTab(url);return;}
+ if(!state.ready){log('Appel reçu mais SDK Webex indisponible. Aucune ouverture automatique.');return;}
+ try{
+  if(typeof state.app.openUrlInSystemBrowser!=='function'){log('API navigateur système indisponible dans cette version du SDK.');return;}
+  await state.app.openUrlInSystemBrowser(url);
+  log('Webex a accepté la demande d’ouverture. Contrôler le navigateur et les domaines autorisés.');
+ }catch(err){log('Erreur ouverture via Webex : '+String(err.message||err));console.error(err);}
+}
+function onCall(call){if(!call||call.state!=='Started')return;const type=String(call.callType||'').toLowerCase();if(type.includes('outgoing')||type.includes('outbound'))return;
+ const number=call.remoteNumber||call.remotePhoneNumber||call.callerNumber||call.remoteParty?.number||'';
+ log('Événement Webex Started détecté : '+(type||'type inconnu')+'. Numéro disponible : '+(number?'oui':'non')+'.');
+ // Les propriétés exactes doivent être confirmées depuis les événements Webex réels.
+ // Ne jamais confondre l'identifiant d'appel (call.id) et le numéro de téléphone.
+ if(!number){log('Numéro appelant non identifié : inspecter le schéma d’événement documenté avant de continuer.');return;}
+ openProfile(number,{callKey:String(call.id||number)});
+}
+$('simulate').addEventListener('click',()=>{log('Simulation d’une sonnerie (aucun appel réel).');openProfile($('phone').value,{manual:true});});
+$('manual').addEventListener('click',()=>openProfile($('phone').value,{manual:true}));
+$('clear').addEventListener('click',()=>{$('log').replaceChildren();state.seen.clear();log('Journal effacé.');});
+$('mode').addEventListener('change',()=>{log('Mode sélectionné : '+$('mode').value);$('direct').href=destination($('phone').value)||'./crm-test.html?phone=0612345678';});
+$('phone').addEventListener('input',()=>{$('direct').href=destination($('phone').value)||'./crm-test.html?phone=0612345678';});
+window.addEventListener('load',async()=>{
+ if(location.protocol==='file:'){$('connection').textContent='Mode local — Webex non connecté';log('Mode local : les boutons ouvrent directement la fiche. Pour capter de vrais appels, héberger en HTTPS et ouvrir depuis Webex.');return;}
+ if(!(window.webex&&window.webex.Application)&&!(window.Webex&&window.Webex.Application)){$('connection').textContent='Navigateur — Webex non détecté';log('SDK Webex absent. Simulation locale disponible.');return;}
+ try{const SDK=(window.webex&&window.webex.Application)?window.webex.Application:window.Webex.Application;state.app=new SDK();await state.app.onReady();await state.app.listen();state.app.on('sidebar:callStateChanged',onCall);state.ready=true;$('connection').textContent='Webex connecté — écoute active';log('En attente d’un appel entrant Webex.');}
+ catch(e){$('connection').textContent='Connexion Webex indisponible';state.app=null;state.ready=false;log('Impossible de connecter le SDK Webex : vérifier le contexte Sidebar et les autorisations.');console.error(e);}
+});
+})();
+</script></body></html>
